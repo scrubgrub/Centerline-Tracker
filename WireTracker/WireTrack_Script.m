@@ -1,4 +1,4 @@
-%% WireTracker v4
+%% WireTracker v1.0
 % coded by Jade Lariviere
 % last edited: Mar. 23, 2025
 
