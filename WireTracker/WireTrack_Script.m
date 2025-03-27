@@ -1,6 +1,6 @@
 %% WireTracker v1.0
 % coded by Jade Lariviere
-% last edited: Mar. 23, 2025
+% last edited: Mar. 27, 2025
 
 %% PRE-PROCESSING =========================================================
 clc; clear; close all;
