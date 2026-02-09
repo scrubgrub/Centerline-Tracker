@@ -1,12 +1,12 @@
 %% helper function to produce an isosurface of input volume for plotting
-% Jade Lariviere | last modified Mar. 22, 2025
+% Jade Lariviere | last modified May 23, 2025
 
 function [patchObj] = makePatch(Volume, Color)
 % this function returns a preformatted patch object using the isosurface
 % faces and vertices about dimensions and data. the Color argument just
 % passes user input into the plot to change the face color, which will 
 % accept any format accepted by the patch() Name-Value argument for
-% shape.FaceColor (long name, short name, RGB, hexadecimal).
+% shape.FaceColor (long name, short name, RGB, hexadecimal). ==============
 
 isofaces = Volume.faces;
 isoverts = Volume.all_verts;
