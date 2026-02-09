@@ -1,220 +1,174 @@
-%% WireTracker v1.0
+%% WireTracker v2.0
 % coded by Jade Lariviere
-% last edited: Mar. 27, 2025
-
+% last edited: Dec. 8, 2025
+    
 %% PRE-PROCESSING =========================================================
 clc; clear; close all;
-% EDITABLE PARAMETERS =====================================================
-Param.OnPlaneTol    = 0.5; % volume projection; larger = more forgiving
-Param.AheadPlaneTol = 0.01; % ortho camera; larger = more 'farsighted'
-Param.ExitTol       = 1.7; % abort before hitting wall; larger = farther
-Param.SurfTol       = 1e-2; % isosurface value; smaller = expands surface
-Param.Momentum      = 0.3; % how much of previous N weighted in N_new
-Param.Speed         = 0.8; % multiplier for speed; higher = faster jumps
-Param.ImageDims     = [70 70]; % returned image dimensions
-Param.erosion       = 2; % structural element size for erosion
-Param.smoothing     = 5; % amount volume is blurred for weighted volume
-Param.pad           = 10; % number of pixels to pad volume for processing
+% OPTIONS & PARAMETERS ====================================================
+Opts.viewTrack      = false; % (slows!) toggle to view tracking process;
+Opts.checkBranches  = true; % toggle to permit branch detection/tracking
+Opts.doInterp       = true; % interpolate branch paths to main centerline
+Opts.makeRunGif     = false; % (slows!) if viewTrack = true, record 1st run
 
-Loop.MaxSearchIt    = 80; % max number of search iterations
-Loop.MaxTrackIt     = 171; % max number of track iterations (< 171!!)
+Param.OnPlaneTol    = 0.5; % cross section; larger = more forgiving
+Param.AheadPlaneTol = 0.05; % camera proximity thresh; larger = 'farsighted'
+Param.ExitTol       = 1.45; % end tracking before a wall; larger = farther  
+Param.Momentum      = 0.10; % how much of previous N weighted in N_new
+Param.Speed         = 0.30; % multiplier for speed; higher = faster jumps
+Param.Memory        = 6; % n previous points passed to flipCheck (>= 3)
+Param.ImageDims     = [65 65]; % returned image dimensions
+Param.smoothing     = 0; % volume smoothing parameter (SD of guassian blur)
+Param.pad           = 5; % number pixels to pad volume for smoothing
+Param.PruneLength   = 3; % number points or fewer in a branch to prune
+
+Loop.MaxTrackIt     = 250; % max number of track iterations
+Loop.MaxFlipFlags   = 3; % max number of allotted flips per tracking run
 
 % =========================================================================
-% import file info % do preliminary processing...
-[I.name,I.path] = uigetfile({'*.raw;*.nii.gz;*.nii','Structural Data'}, ...
-    'Select file with wire segmentation data.');
-    [~,~,I.ext] = fileparts(I.name); % get input file info
-if strcmp(I.ext,'.raw') % for .raw files
-    Wire.raw = double(multibandread(strcat(I.path,'\',I.name), ...
-    [224 224 224],'*uint8',0,'bsq','ieee-be')); % fill file info by hand
-        Wire.raw = Wire.raw./max(Wire.raw,[],'all'); % 0 - 1 best results
-else % for .nii.gz files
-    Wire.raw = double(niftiread(strcat(I.path,'\',I.name)));
+[I, Wire] = openFile;
+
+% extract Wire volume + surface -------------------------------------------
+if Param.smoothing == 0, Wire.volume = Wire.raw; % wire interior 
+    
+else
+    smooth_volume = imgaussfilt3(Wire.raw,Param.smoothing);
+    Wire.volume = smooth_volume; % wire interior 
 end
+% wire surface = voxels just outside of vol perimeter + boundary voxels
+Wire.surface = imdilate(Wire.volume,strel("cuboid",[3 3 3]));
+    Wire.surface = Wire.surface.*(~Wire.volume) + Wire.volume.*I.bounds;
+Wire.idxSurf = find(Wire.surface); % preallocate known nonzero voxels
+fprintf('Identified structure volume and surface.\n');
 
-I.dims = size(Wire.raw); Wire.dims = I.dims; % file dimensions
-vol_padded = padarray(Wire.raw,[Param.pad Param.pad Param.pad]); % pad vol
-[x,y,z] = ndgrid(1:I.dims(1),1:I.dims(2),1:I.dims(3)); % create grid
-
-% creating a weighted volume; blurring = center > edges
-se = strel('sphere',Param.erosion); % structural element for erosion
-wire_eroded = imerode(vol_padded,se); % eroded image
-Wire.volume = smooth3(wire_eroded,'gaussian',5,Param.smoothing);
-    Wire.volume = Wire.volume(Param.pad+1:end-Param.pad, ...
-              Param.pad+1:end-Param.pad,Param.pad+1:end-Param.pad);
-
-% creating wire shell using isosurface() -> convert to 3D volume
-[Wire.faces,Wire.all_verts] = isosurface(x,y,z,Wire.volume,Param.SurfTol);
-Wire.verts = unique(round(Wire.all_verts),'rows'); % preserve unique verts
-idx_surf = sub2ind(I.dims,Wire.verts(:,1),Wire.verts(:,2),Wire.verts(:,3));
-Wire.surface = zeros(I.dims);
-    Wire.surface(idx_surf) = 1;
+% create visualization of volume geometry using isosurface() for UI
+vol_padded = padarray(Wire.volume,[Param.pad Param.pad Param.pad]); % pad vol
+    pad_dims = size(vol_padded);
+[x,y,z] = ndgrid(1:pad_dims(1),1:pad_dims(2),1:pad_dims(3)); % create grid
+[Wire.faces,Wire.all_verts] = isosurface(x,y,z,vol_padded,0);
+    Wire.all_verts = Wire.all_verts - Param.pad; % remove coordinate offset
+Wire.verts = unique(round(Wire.all_verts),'rows'); % keep unique verts
 
 % =========================================================================
 % create a patch from isosurface for UI stuff
 Wire.Patch.object = makePatch(Wire,[0.5 0.6 0.9]); set(gcf,'visible','off');
+fprintf('Isosurface object created.\n')
 
 % request to proceed automatically or not
 answer = questdlg('Run AUTO END SEARCH, or INPUT START POINT & DIRECTION?',...
     'Start Determination','Automatic','Manual Entry','Automatic');
 switch answer
 case 'Automatic' % --------------------------------------------------------
-    % give algorithm start coordinate for tracking = max weighted volume pt
-    [~,idx_Pmax] = max(Wire.volume,[],'all');
-    [P_x,P_y,P_z] = ind2sub(Wire.dims,idx_Pmax);
-        P = [P_x, P_y, P_z];
-    % give algorithm start direction via vector between max and 2nd max
-    [~,idx_Pmax2] = max(Wire.volume(Wire.volume<max(Wire.volume)));
-    [P_x,P_y,P_z] = ind2sub(Wire.dims,idx_Pmax2);
-        N = [P_x, P_y, P_z] - P;
-        N = N/norm(N);
+    % create approximations of end points with bwskel + bwmorph3
+    wire_skel = bwskel(logical(Wire.volume),"MinBranchLength",10);
+    wire_ends = bwmorph3(wire_skel,"endpoints");
+    [P_x, P_y, P_z] = ind2sub(size(wire_ends),find(wire_ends));
+    f = figure("Visible","off"); f_ax = axes; % UI fig
+        hold on; copyobj(Wire.Patch.object,f_ax);
+        scatter3(P_x,P_y,P_z,'ro','filled');
+        hold off;
+    [P_labels] = num2cell(1:size(P_x,1));
+        label_offset = 1;
+    text(P_x,P_y,P_z+label_offset,P_labels,"FontSize",9,'FontWeight','bold');
+    [answer,Opts.figView] = dialogWireStart(f,[],[P_x,P_y,P_z]);
 case 'Manual Entry' % -----------------------------------------------------
         f = figure; f_ax = axes; % new figure for display to user
         set(gcf,'visible','off');
         hold on; copyobj(Wire.Patch.object,f_ax);
         scatter3(Wire.verts(:,1),Wire.verts(:,2),Wire.verts(:,3),'k.');
         hold off;
-    answer = dialogWireStart(f); % open dialog box
-    P = answer(1,:); N = answer(2,:); % set starting points & direction!
-        N = N/norm(N); % normalize N
+    [answer,Opts.figView] = dialogWireStart(f,[]); % open dialog box
 end % ---------------------------------------------------------------------
+P = answer(1,:); N = answer(2,:); % set starting points & direction!
 
-clear se x y z *_*
-% continue to next section to actually run the wire!
-%% LOOP 1: AUTOMATIC WIRE END SEARCH ======================================
-% find wire end using one starting location in wire
-if strcmp(answer,'Automatic') % ONLY IF 'AUTOMATIC' WAS CHOSEN!
-fprintf('--- STARTING WIRE END SEARCH... ---\n');
-Loop.num = 1; % initialize loop counter
-Wire.searchPts = nan([Loop.MaxSearchIt+1 3]); % store search coordinate pts
-    Wire.searchPts(1,:) = P;
-Wire.searchDirs = nan([Loop.MaxSearchIt+1 3]); % store search directions
-    Wire.searchDirs(1,:) = N;
+% ensure dir for storing media if not already -----------------------------
+Opts.gifDir = fileparts(mfilename('fullpath')) + "\recordings\";
+if Opts.makeRunGif && ~exist(Opts.gifDir,"dir"), mkdir(Opts.gifDir); end
 
-while (Loop.num < Loop.MaxSearchIt)
-P_old = P; N_old = N;
-% determine furthest direction, then step ---------------------------------
-Ortho.Data = getProjection(P,N,Wire,'Ahead',Param.AheadPlaneTol);
-[Ortho.Image] = makeImage(Ortho.Data,Param.ImageDims,'Ortho');
-[N_new,step_size,Ortho.FinImage] = getOrthoInfo(Ortho.Data,Ortho.Image,'Absolute');
-    N = N*Param.Momentum + N_new*(1 - Param.Momentum);
-    P = P + N_new*(step_size*Param.Speed); % -------------------------------
+clear se x y z *_* answer
+% continue to next section(s) to actually run the wire!
+%% PHASE 1: START TRACKING UNTIL REACHING AN END ==========================
+% begin main wire tracking, initialize relevant variables
+fprintf('=============== STARTING WIRE TRACKING... ===============\n');
+%Opts.checkBranches = setting_branch;
+tic;    Run = goTrack(Wire,P,N,Opts,Param,Loop);
 
-% settle into center of new cross section % -------------------------------
-Slice.Data = getProjection(P,N,Wire,'On',Param.OnPlaneTol);
-[Slice.Image] = makeImage(Slice.Data,Param.ImageDims,'Slice');
-[P_new,Slice.FinImage] = getVolumeInfo(Slice.Data,Slice.Image,'Local');
-    P = P_new; % ----------------------------------------------------------
+% continue to next section to perform additional processing of data!
+%% PHASE 2: BRANCH EXPLORATION ITERATIVE LOOPING ==========================
+% create struct array for all Tracker calls
+field_names = fieldnames(Run);
+num_fields = size(field_names,1); num_branch = Run.Branch.numBranch;
+% create struct to store all tracking iterations
+    Tracker = cell2struct(cell([num_fields,num_branch+1]),field_names);
+        Tracker(1) = Run;
 
-% plotting for visualization ----------------------------------------------
-figure(2); 
-    scatter3(Wire.verts(:,1),Wire.verts(:,2),Wire.verts(:,3),'.');
-    hold on; scatter3(P(1),P(2),P(3),'r','filled','LineWidth',3);
-    quiver3(P(1),P(2),P(3),N(1)*5,N(2)*5,N(3)*5,'off','r','LineWidth',2);
-    hold off; view(3);
-    xlabel('x'); ylabel('y'); zlabel('z');
-drawnow; %pause(0.1);
-
-% save point & direction history, update loop counter ---------------------
-Wire.searchPts(Loop.num+1,:) = P_new;
-Wire.searchDirs(Loop.num+1,:) = N_new;
-Loop.num = Loop.num + 1;
-% -------------------------------------------------------------------------
-% find shortest distance of point on wire edge to P
-dist_close = min(Ortho.Data.distance,[],'all');
-% terminate loop early on some conditions
-if Wire.raw(round(P(1)),round(P(2)),round(P(3))) == 0
-    fprintf('Tracking exited wire volume. Aborting...\n'); break;
-elseif norm(dist_close) < Param.ExitTol
-    fprintf('Approaching end (surface wall). Aborting...\n'); break;
+if num_branch ~= 0 % tracking loop ----------------------------------------
+    % num_Ns should be equal to num_Ps
+    next_P = Run.Branch.nextPs; next_N = Run.Branch.nextNs;
+        setting_checkBranch = Opts.checkBranches;
+        Opts.checkBranches = false; Opts.viewTrack = false;
+    for i = 1:num_branch % loop through all starting P and N!
+        fprintf('------- Tracking branch %d of %d. -------\n',i,num_branch);
+        Tracker(i+1) = goTrack(Wire,next_P(i,:),next_N(i,:),Opts,Param,Loop);
+    end
+    Opts.checkBranches = setting_checkBranch; % reset to setting
 end
-end % ---------------------------------------------------------------------
-fprintf('Search iteration %g of %g reached.\n',Loop.num,Loop.MaxSearchIt);
-close gcf;
-
-% =========================================================================
-% remove missing entries
-Wire.searchPts = rmmissing(Wire.searchPts);
-Wire.searchDirs = rmmissing(Wire.searchDirs);
-
-% use last 3 P and N to get approximate starting location + direction
-P = mean(Wire.searchPts(end-2:end,:),1);
-N = -mean(Wire.searchDirs(end-2:end,:),1); % invert to go opposite dir
-end
-
-% continue to next section to track entirety of wire!
-%% LOOP 2: START FROM WIRE END AND GO TO OTHER END ========================
-% begin main wire tracking
-fprintf('--- STARTING WIRE TRACKING... ---\n');
-Loop.num = 1; % initialize loop counter
-Centroid.raw = nan([Loop.MaxTrackIt+1 3]); % store search coordinate pts
-    Centroid.raw(1,:) = P;
-
-while (Loop.num < Loop.MaxTrackIt)
-P_old = P; N_old = N;
-% determine furthest direction, then step ---------------------------------
-Ortho.Data = getProjection(P,N,Wire,'Ahead',Param.AheadPlaneTol);
-[Ortho.Image] = makeImage(Ortho.Data,Param.ImageDims,'Ortho');
-[N_new,step_size,Ortho.FinImage] = getOrthoInfo(Ortho.Data,Ortho.Image,'Absolute');
-    N = N*Param.Momentum + N_new*(1 - Param.Momentum);
-    P = P + N_new*(step_size*Param.Speed); % -------------------------------
-
-% settle into center of new cross section % -------------------------------
-Slice.Data = getProjection(P,N,Wire,'On',Param.OnPlaneTol);
-[Slice.Image] = makeImage(Slice.Data,Param.ImageDims,'Slice');
-[P_new,Slice.FinImage] = getVolumeInfo(Slice.Data,Slice.Image,'Local');
-    P = P_new; % ----------------------------------------------------------
-
-% plotting for visualization ----------------------------------------------
-figure(2);
-subplot(2,2,1:2:3);
-    scatter3(Wire.verts(:,1),Wire.verts(:,2),Wire.verts(:,3),'.');
-    hold on; scatter3(P(1),P(2),P(3),'r','filled','LineWidth',3);
-    quiver3(P(1),P(2),P(3),N(1)*5,N(2)*5,N(3)*5,'off','r','LineWidth',2);
-    hold off; view(3);
-    xlabel('x'); ylabel('y'); zlabel('z');
-subplot(2,2,2);
-    imshow(Ortho.FinImage.ROI',[0 50]); set(gca,"YDir","normal");
-    xlabel('u'); ylabel('v'); colormap("pink");
-subplot(2,2,4);
-    imshow(Slice.FinImage.ROI',[0 0.5]); set(gca,"YDir","normal");
-drawnow; %pause(0.1);
-%exportgraphics(figure(1),'sub004OZtrack.gif','Append',true);
-
-% save centroid, update loop counter --------------------------------------
-Centroid.raw(Loop.num+1,:) = P_new;
-Loop.num = Loop.num + 1;
-% -------------------------------------------------------------------------
-% find shortest distance of point on wire edge to P
-dist_close = min(Ortho.Data.distance,[],'all');
-% terminate loop early on some conditions
-if Wire.raw(round(P(1)),round(P(2)),round(P(3))) == 0
-    fprintf('Tracking exited wire volume. Aborting...\n'); break;
-elseif norm(dist_close) < Param.ExitTol
-    fprintf('Approaching end (surface wall). Aborting...\n'); break;
-end
-end % ---------------------------------------------------------------------
-fprintf('Tracking iteration %g of %g reached.\n',Loop.num,Loop.MaxTrackIt);
-close gcf;
-
-% continue to next section to perform post-processing of data!
-%% POST PROCESSING ========================================================
-% clean up wire centroids (prune list & average points)
-Centroid.raw = rmmissing(Centroid.raw);
-pts_next = [Centroid.raw(2:end,:); Centroid.raw(end,:)]; % averaging
-pts_before = [Centroid.raw(1,:); Centroid.raw(1:end-1,:)];
-    Centroid.smooth = (Centroid.raw + pts_before + pts_next)./3;
-
-f = figure; f_ax = axes; set(gcf,'visible','off'); % figure for dialog box -----------------
-    hold on; copyobj(Wire.Patch.object,f_ax);
-    plot3(Centroid.smooth(:,1),Centroid.smooth(:,2),Centroid.smooth(:,3),'.-');
-    scatter3(Centroid.smooth(1,1),Centroid.smooth(1,2),Centroid.smooth(1,3),'cyan','filled');
-    scatter3(Centroid.smooth(end,1),Centroid.smooth(end,2),Centroid.smooth(end,3),'red','filled');
-    hold off;
-answer = dialogTrackingCheck(f); % open dialog for final check
-if answer; Centroid.smooth = flipud(Centroid.smooth); end % flip if yes
 
 clear *_*
+% continue to the next section to finalize results
+%% POST PROCESSING ========================================================
+% prune short branches & sort order before finalizing and export
+if Opts.checkBranches
+    branch_sizes = arrayfun(@(x) size(x.raw,1),[Tracker.Points]);
+    short_branches = branch_sizes <= Param.PruneLength;
+        short_branches(1) = 0; % first branch prevented from being pruned!
+    Tracker(short_branches) = [];
+    sort_near = arrayfun(@(x) norm(x.Points.smooth(1,:)-Tracker(1).Points.smooth(1,:)), ...
+    Tracker,'UniformOutput',false);
+    [~,sort_idx] = sort(cell2mat(sort_near));
+    Tracker = Tracker(sort_idx);
+    fprintf(2,"*** Number of branches found: %d\n" + ...
+        "*** Branches pruned: %d\n*** Final branch number: %d\n", ...
+        Tracker(1).Branch.numBranch,sum(short_branches),size(Tracker,1)-1);
+end
+
+% finalize the tracking paths ---------------------------------------------
+Tracker(1).Points.final = Tracker(1).Points.smooth; % first curve
+if Opts.checkBranches && Opts.doInterp % remaining tracks interpolated
+    for i = 2:length(Tracker)
+        Tracker(i).Points.final = interpBranch(Tracker(i).Points.smooth,...
+            Tracker(1).Points.final,Param);
+    end
+else % pass remaining smoothed tracks as final
+    for i = 2:length(Tracker)
+        Tracker(i).Points.final = Tracker(i).Points.smooth;
+    end
+end;    toc;
+
+% dialog box figure -------------------------------------------------------
+f = figure("WindowState","maximized","Visible","off"); f_ax = axes; % UI fig
+    hold on; copyobj(Wire.Patch.object,f_ax);
+    plot3(Tracker(1).Points.final(:,1),Tracker(1).Points.final(:,2), ...
+            Tracker(1).Points.final(:,3),'k.-','LineWidth',1.5);
+    arrayfun(@(x) scatter3(x.Points.smooth(1,1),x.Points.smooth(1,2), ...
+        x.Points.smooth(1,3), ...
+        'cyan','filled'), Tracker); % start points
+    arrayfun(@(x) scatter3(x.Points.smooth(end,1),x.Points.smooth(end,2), ...
+        x.Points.smooth(end,3), ...
+        'red','filled'), Tracker); % end points
+    for i = 2:size(Tracker,1)
+    plot3(Tracker(i).Points.final(:,1),Tracker(i).Points.final(:,2), ...
+        Tracker(i).Points.final(:,3),'.-');
+    text(Tracker(i).Points.smooth(1,1),Tracker(i).Points.smooth(1,2), ...
+        Tracker(i).Points.smooth(1,3), ...
+        sprintf('Brc %g',i-1),"FontSize",9); % label
+    end
+    hold off;
+% final view dialog, flip if yes
+track_length = [Tracker.numPts];
+answer = dialogTrackCheck(f,Opts.figView,track_length);
+if answer; Tracker(1).Points.smooth = flipud(Tracker(1).Points.smooth); end
+
+clear *_* se answer
 % continue to next section to export your data!
 %% SAVE & EXPORT ==========================================================
 % save .mat file of centroid array!
@@ -225,9 +179,11 @@ O.path = uigetdir(I.path,'Select folder to save wire centroids.');
 answer = inputdlg({'Subject ID','Volume Identifier'},'Name .mat file.',...
     [1 15; 1 15]);
 O.name = sprintf('/%s_%s.mat',answer{1},answer{2});
+O.centerlines = cell2struct(arrayfun(@(x) x.Points.final,Tracker,'UniformOutput',false), ...
+    'Coordinates',2);
 
-save(strcat(O.path,O.name),'-struct','Centroid','smooth');
-fprintf('Saving %s to %s...\n',O.name,O.path); % --------------------------
+save(strcat(O.path,O.name),'-struct','O','centerlines');
+fprintf(2,'Saved %s to %s !\n',O.name,O.path); % --------------------------
 
 clear f answer *_*
 % and we're done!
