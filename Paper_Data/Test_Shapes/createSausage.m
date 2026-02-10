@@ -22,43 +22,6 @@ end
 
 volshow(sausage)
 
-% Voxelize and identify unique coordinate points
-%{
-coord_idx = [round(x), round(y), round(z)];
-coord_idx = unique(coord_idx, 'stable', 'rows');
-coord_idx_lin = sub2ind([sz1, sz2, sz3], coord_idx(:,1), ...
-    coord_idx(:,2), coord_idx(:,3));
-
-theta = linspace(pi/6, 5*pi/6, pts);
-
-% Create the sausage
-sausage = extendedObjectMesh('sphere'); % Create first object out of loop
-sausage = scale(sausage, sin(theta(1)));
-sausage = translate(sausage, [coord_idx(1,2), ...
-    coord_idx(1,1), coord_idx(1,3)]);
-for pt = 2:size(coord_idx, 1) % Iteratively join future objects
-    sphere = extendedObjectMesh('sphere');
-    sphere = scale(sphere, sin(theta(pt)));
-    sphere = translate(sphere, [coord_idx(pt,2), ...
-        coord_idx(pt,1), coord_idx(pt,3)]);
-    sausage = join(sausage, sphere);
-end
-show(sausage);
-
-% Not functional - voxelization creates empty matrix
-s = struct('vertices', sausage.Vertices, 'faces', sausage.Faces);
-sausage = double(VOXELISE(1:sz1, 1:sz2, 1:sz3, s)); clear s
-figure; hold on;
-for sli = 1:sz3
-    subplot(16, 28, sli);
-    imshow(sausage(:,:,sli))
-end
-
-for sli = min(coord_idx(:,3)):max(coord_idx(:,3))
-    sausage(:,:,sli) = imfill(squeeze(sausage(:,:,sli)));
-end
-%}
-
 % Save Centerline
 save("sausage.mat", "truthXYZ");
 % Save Volume
