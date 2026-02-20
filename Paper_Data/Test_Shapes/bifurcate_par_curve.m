@@ -1,3 +1,5 @@
+%% creates a path with bifurcation at regular intervals
+% by Warren Boschen
 clear; clc; close all
 
 length = 5; segments = 500;
