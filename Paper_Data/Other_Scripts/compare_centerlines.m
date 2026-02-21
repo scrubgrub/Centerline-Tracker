@@ -30,7 +30,7 @@ created by Adam A. on MATLAB File Exchange.
 %% PARAMETERS
 clear; clc; close all
 
-subj= [2 4 22 26 47 51 54 64 70 73 75 76 86 92 97 100 1001];
+subj = [2 4 22 26 47 51 54 64 70 73 75 76 86 92 97 100 1001];
     geometry = ["F3" "F4" "OZ"];
 %subj = [1001]; geometry = ["FPZ" "OZ" "T7" "T8"];
 % subj = "test"; geometry = ["wavy" "spiral" "loop" "sausage"];
