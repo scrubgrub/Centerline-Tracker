@@ -1,5 +1,6 @@
 Author: Warren Boschen & Jade Lariviere, February 20 2026
 
+All data was handled and processed in MATLAB.
 Sets:
     ASU: 2, 4, 22, 23, 26, 47, 51, 54, 64, 70, 73, 75, 76, 86, 92, 97, 100, 1001
     UF: 1, 2, 4, 5, 6, 7
@@ -10,3 +11,6 @@ Each subject folder for each set (ASU, UF, Test) contains the same files:
     SUB###_WIRE_VMTK.mat - Centerline produced by VMTK in 3D Slicer.
     *.json - Direct output of centerline produced by VMTK. Read into MATLAB using read_vmtk.m and produces SUB###_WIRE_VMTK.mat.
     *.nii.gz - The binary masks of the listed wire (F3, F4, OZ for all except ASU1001, who has FPZ, OZ, T7, T8). File names are structured differently between sets.
+
+The Test_Shapes folder contains additional files per shape:
+    true_*.mat - the ground truth centerline, which is equal to the 3D parametric curves used to generate the shapes
