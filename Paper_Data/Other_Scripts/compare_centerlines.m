@@ -8,7 +8,7 @@ ground truth.
 USAGE: Hit Run at the top of the screen.
 
 INPUTS: Change PARAMETERS section if necessary to configure to data, and 
-lines 60-65 ("LOAD DATA HERE!!") then Run. UF, ASU and test data had slight
+line 58 ("LOAD DATA HERE!!") then Run. UF, ASU and test data had slight
 differences between labeling originally, hence the hardcoded lines specific
 to each dataset.
 
@@ -62,17 +62,17 @@ for n = 1:length(subj)
             wire_mask = wire_mask/max(wire_mask,[],"all"); % for ASU
         % wire_mask = niftiread("wire_"+geometry(m)+"_closed_reg.nii.gz"); % for UF
         % wire_mask = niftiread(geometry(m)); % for test shapes
-        % -------------------------------------------------------------------------
-        % remove extraneous CC in image, keep largest one
-        wire_CCs = labelmatrix(bwconncomp(wire_mask));
-        biggest_CC = mode(wire_CCs(wire_CCs ~= 0),"all");
-        wire_mask(wire_CCs ~= biggest_CC) = 0;
 
         % load centerlines
         VMTK = load(sprintf("SUB%s_%s_VMTK.mat",ID{n},geometry(m))).vmtkCentroids;
         ORTHO = load(sprintf("newSUB%s_%s.mat",ID{n},geometry(m))).centerlines.Coordinates;
             % VMTK = load(geometry(m)+"_vmtk.mat").vmtkCentroids; % test shape
-            % ORTHO = load(geometry(m)+"_ortho.mat").centerlines.Coordinates; % test shape
+            % ORTHO = load(geometry(m)+".mat").centerlines.Coordinates; % test shape
+        % -------------------------------------------------------------------------
+        % remove extraneous CC in image, keep largest one
+        wire_CCs = labelmatrix(bwconncomp(wire_mask));
+        biggest_CC = mode(wire_CCs(wire_CCs ~= 0),"all");
+        wire_mask(wire_CCs ~= biggest_CC) = 0;
         % Comparisons =====================================================
         % VMTK ------------------------------------------------------------
         fprintf('\n========== VMTK RESULTS ==========\n%s_%s\n',ID{n},geometry(m));
